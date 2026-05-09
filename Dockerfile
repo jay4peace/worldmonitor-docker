@@ -11,7 +11,11 @@
 FROM alpine/git AS cloner
 WORKDIR /src
 ARG WORLDMONITOR_VERSION=main
-RUN git clone --depth 1 --branch ${WORLDMONITOR_VERSION} https://github.com/koala73/worldmonitor.git .
+RUN git clone --depth 1 --branch ${WORLDMONITOR_VERSION} https://github.com/koala73/worldmonitor.git . && \
+    if [ ! -d "docker" ]; then \
+      git fetch origin main --depth 1 && \
+      git checkout FETCH_HEAD -- docker/ ; \
+    fi
 
 # ── Stage 1: Builder ─────────────────────────────────────────────────────────
 FROM node:22-alpine AS builder
