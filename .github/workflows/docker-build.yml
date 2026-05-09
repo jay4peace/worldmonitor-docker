@@ -1,0 +1,112 @@
+name: Build and Push WorldMonitor Docker Image
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # Check daily at midnight UTC
+  workflow_dispatch: # Allow manual triggers
+    inputs:
+      version:
+        description: 'Version tag to build (e.g. v1.2.3)'
+        required: false
+        default: 'latest'
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  check-and-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get latest release tag from upstream
+        id: get_upstream_tag
+        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.version == 'latest')
+        run: |
+          # Try to get latest release tag first
+          LATEST_TAG=$(curl -sL -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" https://api.github.com/repos/koala73/worldmonitor/releases/latest | jq -r '.tag_name')
+          
+          # If no releases exist, fallback to the latest tag
+          if [ "$LATEST_TAG" = "null" ] || [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG=$(curl -sL -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" https://api.github.com/repos/koala73/worldmonitor/tags | jq -r '.[0].name')
+          fi
+          
+          if [ "$LATEST_TAG" = "null" ] || [ -z "$LATEST_TAG" ]; then
+            echo "Failed to fetch latest tag."
+            exit 1
+          fi
+          
+          echo "tag=${LATEST_TAG}" >> $GITHUB_OUTPUT
+
+      - name: Determine tag to build
+        id: determine_tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.version }}" != "latest" ]; then
+            echo "build_tag=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "build_tag=${{ steps.get_upstream_tag.outputs.tag }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set lower case owner name
+        id: owner
+        run: |
+          echo "owner=$(echo ${GITHUB_REPOSITORY_OWNER} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check if image already exists in GHCR
+        id: check_image
+        run: |
+          BUILD_TAG=${{ steps.determine_tag.outputs.build_tag }}
+          IMAGE="ghcr.io/${{ steps.owner.outputs.owner }}/worldmonitor:${BUILD_TAG}"
+          
+          echo "Checking if $IMAGE exists..."
+          # Use docker manifest inspect to check if the image tag already exists
+          if docker manifest inspect $IMAGE > /dev/null 2>&1; then
+            echo "Image for tag $BUILD_TAG already exists in GHCR. Skipping build."
+            echo "skip_build=true" >> $GITHUB_OUTPUT
+          else
+            echo "Image for tag $BUILD_TAG does not exist. Proceeding with build."
+            echo "skip_build=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up QEMU
+        if: steps.check_image.outputs.skip_build == 'false'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: steps.check_image.outputs.skip_build == 'false'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata (tags, labels) for Docker
+        if: steps.check_image.outputs.skip_build == 'false'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ steps.owner.outputs.owner }}/worldmonitor
+          tags: |
+            type=raw,value=${{ steps.determine_tag.outputs.build_tag }}
+            type=raw,value=latest,enable=${{ github.event_name == 'schedule' || github.event.inputs.version == 'latest' }}
+
+      - name: Build and push Docker image
+        if: steps.check_image.outputs.skip_build == 'false'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            WORLDMONITOR_VERSION=${{ steps.determine_tag.outputs.build_tag }}
