@@ -2,7 +2,7 @@ name: Build and Push WorldMonitor Docker Image
 
 on:
   schedule:
-    - cron: '0 0 * * *' # Check daily at midnight UTC
+    - cron: '43 21 * * *' # Check daily at 06:43 AM KST
   workflow_dispatch: # Allow manual triggers
     inputs:
       version:
