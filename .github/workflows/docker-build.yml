@@ -113,7 +113,7 @@ jobs:
 
       - name: Build and push worldmonitor image
         if: steps.check_image.outputs.skip_build == 'false'
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
@@ -181,7 +181,7 @@ jobs:
 
       - name: Build and push ais-relay image
         if: steps.check_image.outputs.skip_build == 'false'
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.relay
@@ -249,7 +249,7 @@ jobs:
 
       - name: Build and push redis-rest image
         if: steps.check_image.outputs.skip_build == 'false'
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.redis-rest

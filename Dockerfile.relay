@@ -14,7 +14,7 @@ FROM alpine/git AS cloner
 WORKDIR /src
 ARG WORLDMONITOR_VERSION=main
 RUN git clone --depth 1 --branch ${WORLDMONITOR_VERSION} https://github.com/koala73/worldmonitor.git . && \
-    if [ ! -f "scripts/ais-relay.cjs" ]; then \
+    if [ ! -f "scripts/ais-relay.cjs" ] || [ ! -d "shared" ] || [ ! -d "data" ]; then \
       git fetch origin main --depth 1 && \
       git checkout FETCH_HEAD -- scripts/ shared/ data/ ; \
     fi
