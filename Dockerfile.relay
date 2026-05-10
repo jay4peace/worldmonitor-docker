@@ -23,13 +23,15 @@ RUN git clone --depth 1 --branch ${WORLDMONITOR_VERSION} https://github.com/koal
 FROM node:22-alpine
 
 # curl required by OREF polling (Node.js JA3 fingerprint blocked by Akamai; curl passes)
-RUN apk add --no-cache curl
+# python3/make/g++ required by node-gyp to compile native addons (e.g. utf-8-validate)
+RUN apk add --no-cache curl python3 make g++
 
 WORKDIR /app
 
 # Install scripts/ runtime dependencies (telegram, ws, fast-xml-parser, etc.)
 COPY --from=cloner /src/scripts/package.json /src/scripts/package-lock.json ./scripts/
-RUN npm ci --prefix scripts --omit=dev
+RUN npm ci --prefix scripts --omit=dev && \
+    apk del make g++
 
 # Relay script and shared helpers
 COPY --from=cloner /src/scripts/ais-relay.cjs ./scripts/ais-relay.cjs
