@@ -1,4 +1,4 @@
-name: Build and Push WorldMonitor Docker Image
+name: Build and Push WorldMonitor Docker Images
 
 on:
   schedule:
@@ -14,32 +14,34 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
-  check-and-build:
+  # ──────────────────────────────────────────────────────────────────────────
+  # Step 1: Determine which upstream tag to build
+  # ──────────────────────────────────────────────────────────────────────────
+  resolve-tag:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+    outputs:
+      build_tag: ${{ steps.determine_tag.outputs.build_tag }}
+      owner: ${{ steps.owner.outputs.owner }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
       - name: Get latest release tag from upstream
         id: get_upstream_tag
         if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.version == 'latest')
         run: |
           # Try to get latest release tag first
           LATEST_TAG=$(curl -sL -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" https://api.github.com/repos/koala73/worldmonitor/releases/latest | jq -r '.tag_name')
-          
+
           # If no releases exist, fallback to the latest tag
           if [ "$LATEST_TAG" = "null" ] || [ -z "$LATEST_TAG" ]; then
             LATEST_TAG=$(curl -sL -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" https://api.github.com/repos/koala73/worldmonitor/tags | jq -r '.[0].name')
           fi
-          
+
           if [ "$LATEST_TAG" = "null" ] || [ -z "$LATEST_TAG" ]; then
             echo "Failed to fetch latest tag."
             exit 1
           fi
-          
+
           echo "tag=${LATEST_TAG}" >> $GITHUB_OUTPUT
 
       - name: Determine tag to build
@@ -56,6 +58,19 @@ jobs:
         run: |
           echo "owner=$(echo ${GITHUB_REPOSITORY_OWNER} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # Step 2: Build worldmonitor (main app)
+  # ──────────────────────────────────────────────────────────────────────────
+  build-worldmonitor:
+    needs: resolve-tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Log in to the Container registry
         uses: docker/login-action@v3
         with:
@@ -66,13 +81,12 @@ jobs:
       - name: Check if image already exists in GHCR
         id: check_image
         run: |
-          BUILD_TAG=${{ steps.determine_tag.outputs.build_tag }}
-          IMAGE="ghcr.io/${{ steps.owner.outputs.owner }}/worldmonitor:${BUILD_TAG}"
-          
+          BUILD_TAG=${{ needs.resolve-tag.outputs.build_tag }}
+          IMAGE="ghcr.io/${{ needs.resolve-tag.outputs.owner }}/worldmonitor:${BUILD_TAG}"
+
           echo "Checking if $IMAGE exists..."
-          # Use docker manifest inspect to check if the image tag already exists
           if docker manifest inspect $IMAGE > /dev/null 2>&1; then
-            echo "Image for tag $BUILD_TAG already exists in GHCR. Skipping build."
+            echo "Image for tag $BUILD_TAG already exists. Skipping build."
             echo "skip_build=true" >> $GITHUB_OUTPUT
           else
             echo "Image for tag $BUILD_TAG does not exist. Proceeding with build."
@@ -87,26 +101,163 @@ jobs:
         if: steps.check_image.outputs.skip_build == 'false'
         uses: docker/setup-buildx-action@v3
 
-      - name: Extract metadata (tags, labels) for Docker
+      - name: Extract metadata for Docker
         if: steps.check_image.outputs.skip_build == 'false'
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ steps.owner.outputs.owner }}/worldmonitor
+          images: ${{ env.REGISTRY }}/${{ needs.resolve-tag.outputs.owner }}/worldmonitor
           tags: |
-            type=raw,value=${{ steps.determine_tag.outputs.build_tag }}
+            type=raw,value=${{ needs.resolve-tag.outputs.build_tag }}
             type=raw,value=latest,enable=${{ github.event_name == 'schedule' || github.event.inputs.version == 'latest' }}
 
-      - name: Build and push Docker image
+      - name: Build and push worldmonitor image
         if: steps.check_image.outputs.skip_build == 'false'
         uses: docker/build-push-action@v5
         with:
           context: .
+          file: Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=worldmonitor
+          cache-to: type=gha,mode=max,scope=worldmonitor
           build-args: |
-            WORLDMONITOR_VERSION=${{ steps.determine_tag.outputs.build_tag }}
+            WORLDMONITOR_VERSION=${{ needs.resolve-tag.outputs.build_tag }}
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Step 3: Build worldmonitor-ais-relay
+  # ──────────────────────────────────────────────────────────────────────────
+  build-ais-relay:
+    needs: resolve-tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check if image already exists in GHCR
+        id: check_image
+        run: |
+          BUILD_TAG=${{ needs.resolve-tag.outputs.build_tag }}
+          IMAGE="ghcr.io/${{ needs.resolve-tag.outputs.owner }}/worldmonitor-ais-relay:${BUILD_TAG}"
+
+          echo "Checking if $IMAGE exists..."
+          if docker manifest inspect $IMAGE > /dev/null 2>&1; then
+            echo "Image for tag $BUILD_TAG already exists. Skipping build."
+            echo "skip_build=true" >> $GITHUB_OUTPUT
+          else
+            echo "Image for tag $BUILD_TAG does not exist. Proceeding with build."
+            echo "skip_build=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up QEMU
+        if: steps.check_image.outputs.skip_build == 'false'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: steps.check_image.outputs.skip_build == 'false'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata for Docker
+        if: steps.check_image.outputs.skip_build == 'false'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ needs.resolve-tag.outputs.owner }}/worldmonitor-ais-relay
+          tags: |
+            type=raw,value=${{ needs.resolve-tag.outputs.build_tag }}
+            type=raw,value=latest,enable=${{ github.event_name == 'schedule' || github.event.inputs.version == 'latest' }}
+
+      - name: Build and push ais-relay image
+        if: steps.check_image.outputs.skip_build == 'false'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.relay
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=ais-relay
+          cache-to: type=gha,mode=max,scope=ais-relay
+          build-args: |
+            WORLDMONITOR_VERSION=${{ needs.resolve-tag.outputs.build_tag }}
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Step 4: Build worldmonitor-redis-rest
+  # ──────────────────────────────────────────────────────────────────────────
+  build-redis-rest:
+    needs: resolve-tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check if image already exists in GHCR
+        id: check_image
+        run: |
+          BUILD_TAG=${{ needs.resolve-tag.outputs.build_tag }}
+          IMAGE="ghcr.io/${{ needs.resolve-tag.outputs.owner }}/worldmonitor-redis-rest:${BUILD_TAG}"
+
+          echo "Checking if $IMAGE exists..."
+          if docker manifest inspect $IMAGE > /dev/null 2>&1; then
+            echo "Image for tag $BUILD_TAG already exists. Skipping build."
+            echo "skip_build=true" >> $GITHUB_OUTPUT
+          else
+            echo "Image for tag $BUILD_TAG does not exist. Proceeding with build."
+            echo "skip_build=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up QEMU
+        if: steps.check_image.outputs.skip_build == 'false'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: steps.check_image.outputs.skip_build == 'false'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata for Docker
+        if: steps.check_image.outputs.skip_build == 'false'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ needs.resolve-tag.outputs.owner }}/worldmonitor-redis-rest
+          tags: |
+            type=raw,value=${{ needs.resolve-tag.outputs.build_tag }}
+            type=raw,value=latest,enable=${{ github.event_name == 'schedule' || github.event.inputs.version == 'latest' }}
+
+      - name: Build and push redis-rest image
+        if: steps.check_image.outputs.skip_build == 'false'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.redis-rest
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=redis-rest
+          cache-to: type=gha,mode=max,scope=redis-rest
+          build-args: |
+            WORLDMONITOR_VERSION=${{ needs.resolve-tag.outputs.build_tag }}

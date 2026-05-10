@@ -1,0 +1,113 @@
+# =============================================================================
+# World Monitor — Production Deployment
+# =============================================================================
+# Uses pre-built images from GHCR. No source code required.
+#
+# Quick start:
+#   cp .env.example .env   # fill in your API keys
+#   docker compose up -d
+#
+# Images are built automatically via GitHub Actions in worldmonitor-docker repo.
+# =============================================================================
+
+services:
+
+  worldmonitor:
+    image: ghcr.io/jay4peace/worldmonitor:latest
+    container_name: worldmonitor
+    restart: unless-stopped
+    environment:
+      # ── Internal service endpoints ──────────────────────────────────────────
+      UPSTASH_REDIS_REST_URL: "http://worldmonitor-redis-rest:80"
+      UPSTASH_REDIS_REST_TOKEN: "${REDIS_TOKEN:-wm-local-token}"
+      LOCAL_API_PORT: "46123"
+      LOCAL_API_MODE: "docker"
+      LOCAL_API_CLOUD_FALLBACK: "false"
+      WS_RELAY_URL: "http://worldmonitor-ais-relay:3004"
+      # ── LLM (any OpenAI-compatible endpoint) ────────────────────────────────
+      LLM_API_URL: "${LLM_API_URL:-}"
+      LLM_API_KEY: "${LLM_API_KEY:-}"
+      LLM_MODEL: "${LLM_MODEL:-}"
+      GROQ_API_KEY: "${GROQ_API_KEY:-}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      # ── Data source API keys ────────────────────────────────────────────────
+      AISSTREAM_API_KEY: "${AISSTREAM_API_KEY:-}"
+      FINNHUB_API_KEY: "${FINNHUB_API_KEY:-}"
+      EIA_API_KEY: "${EIA_API_KEY:-}"
+      FRED_API_KEY: "${FRED_API_KEY:-}"
+      ACLED_ACCESS_TOKEN: "${ACLED_ACCESS_TOKEN:-}"
+      NASA_FIRMS_API_KEY: "${NASA_FIRMS_API_KEY:-}"
+      CLOUDFLARE_API_TOKEN: "${CLOUDFLARE_API_TOKEN:-}"
+      AVIATIONSTACK_API: "${AVIATIONSTACK_API:-}"
+    labels:
+      # ── Caddy reverse proxy ─────────────────────────────────────────────────
+      caddy: "${WM_DOMAIN:-worldmonitor.localhost}"
+      caddy.reverse_proxy: "{{upstreams 8080}}"
+    depends_on:
+      worldmonitor-redis-rest:
+        condition: service_started
+      worldmonitor-ais-relay:
+        condition: service_started
+    networks:
+      - worldmonitor
+      - home-network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  worldmonitor-ais-relay:
+    image: ghcr.io/jay4peace/worldmonitor-ais-relay:latest
+    container_name: worldmonitor-ais-relay
+    restart: unless-stopped
+    environment:
+      AISSTREAM_API_KEY: "${AISSTREAM_API_KEY:-}"
+      PORT: "3004"
+    networks:
+      - worldmonitor
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3004/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  worldmonitor-redis:
+    image: redis:7-alpine
+    container_name: worldmonitor-redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    networks:
+      - worldmonitor
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  worldmonitor-redis-rest:
+    image: ghcr.io/jay4peace/worldmonitor-redis-rest:latest
+    container_name: worldmonitor-redis-rest
+    restart: unless-stopped
+    environment:
+      SRH_TOKEN: "${REDIS_TOKEN:-wm-local-token}"
+      SRH_CONNECTION_STRING: "redis://worldmonitor-redis:6379"
+    depends_on:
+      worldmonitor-redis:
+        condition: service_healthy
+    networks:
+      - worldmonitor
+
+volumes:
+  redis-data:
+    name: worldmonitor-redis-data
+
+networks:
+  worldmonitor:
+    name: worldmonitor
+  home-network:
+    external: true

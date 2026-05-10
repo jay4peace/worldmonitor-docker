@@ -1,0 +1,57 @@
+# =============================================================================
+# World Monitor — AIS Relay Sidecar
+# =============================================================================
+# Multi-stage build:
+#   cloner  — fetches source from GitHub
+#   final   — Node 22 Alpine runtime
+#
+# Runs scripts/ais-relay.cjs as a standalone container.
+# Set AISSTREAM_API_KEY in docker-compose.yml or env.
+# =============================================================================
+
+# ── Stage 0: Cloner ──────────────────────────────────────────────────────────
+FROM alpine/git AS cloner
+WORKDIR /src
+ARG WORLDMONITOR_VERSION=main
+RUN git clone --depth 1 --branch ${WORLDMONITOR_VERSION} https://github.com/koala73/worldmonitor.git . && \
+    if [ ! -f "scripts/ais-relay.cjs" ]; then \
+      git fetch origin main --depth 1 && \
+      git checkout FETCH_HEAD -- scripts/ shared/ data/ ; \
+    fi
+
+# ── Stage 1: Runtime ─────────────────────────────────────────────────────────
+FROM node:22-alpine
+
+# curl required by OREF polling (Node.js JA3 fingerprint blocked by Akamai; curl passes)
+RUN apk add --no-cache curl
+
+WORKDIR /app
+
+# Install scripts/ runtime dependencies (telegram, ws, fast-xml-parser, etc.)
+COPY --from=cloner /src/scripts/package.json /src/scripts/package-lock.json ./scripts/
+RUN npm ci --prefix scripts --omit=dev
+
+# Relay script and shared helpers
+COPY --from=cloner /src/scripts/ais-relay.cjs ./scripts/ais-relay.cjs
+COPY --from=cloner /src/scripts/_proxy-utils.cjs ./scripts/_proxy-utils.cjs
+COPY --from=cloner /src/scripts/_seed-utils.mjs ./scripts/_seed-utils.mjs
+COPY --from=cloner /src/scripts/_seed-envelope-source.mjs ./scripts/_seed-envelope-source.mjs
+COPY --from=cloner /src/scripts/_seed-contract.mjs ./scripts/_seed-contract.mjs
+COPY --from=cloner /src/scripts/_country-resolver.mjs ./scripts/_country-resolver.mjs
+COPY --from=cloner /src/scripts/_climate-news-helpers.mjs ./scripts/_climate-news-helpers.mjs
+COPY --from=cloner /src/scripts/seed-climate-news.mjs ./scripts/seed-climate-news.mjs
+COPY --from=cloner /src/scripts/seed-chokepoint-flows.mjs ./scripts/seed-chokepoint-flows.mjs
+COPY --from=cloner /src/scripts/seed-ember-electricity.mjs ./scripts/seed-ember-electricity.mjs
+
+# Shared helper required by the relay (rss-allowed-domains.cjs)
+COPY --from=cloner /src/shared/ ./shared/
+
+# Data files required by the relay (telegram-channels.json, etc.)
+COPY --from=cloner /src/data/ ./data/
+
+EXPOSE 3004
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -qO- http://localhost:3004/health || exit 1
+
+CMD ["node", "scripts/ais-relay.cjs"]

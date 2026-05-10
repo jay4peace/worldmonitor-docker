@@ -1,0 +1,5 @@
+# Environment — never commit real keys
+.env
+
+# Docker secrets directory
+secrets/
